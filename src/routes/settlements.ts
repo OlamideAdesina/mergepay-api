@@ -30,7 +30,7 @@ import {
 import { config } from "../config";
 import { Errors } from "../errors";
 import { requireUser } from "../plugins/auth";
-import { requireMembership } from "../services/access";
+import { requireActiveMembership, requireMembership } from "../services/access";
 import { requireGroupRole } from "../plugins/group-access";
 import { stellar, memoText } from "../services/stellar";
 import { validateSettlementXdr } from "../services/settlement-xdr";
@@ -205,7 +205,7 @@ export default async function settlementRoutes(app: FastifyInstance) {
       include: { shares: true, payer: true },
     });
     if (!expense) throw Errors.notFound("Expense not found");
-    await requireMembership(expense.groupId, auth.id);
+    await requireActiveMembership(expense.groupId, auth.id);
 
     const payerMembership = await prisma.groupMember.findUnique({
       where: { groupId_userId: { groupId: expense.groupId, userId: expense.payerUserId } },
@@ -338,7 +338,7 @@ export default async function settlementRoutes(app: FastifyInstance) {
     "/groups/:id/settlements",
     {
       ...createLimit,
-      preHandler: requireGroupRole("member", { param: "id" }),
+      preHandler: requireGroupRole("member", { param: "id", active: true }),
       schema: {
         tags: ["Settlements"],
         summary: "Settle up against a group's net balance",
@@ -491,7 +491,7 @@ export default async function settlementRoutes(app: FastifyInstance) {
       include: settlementInclude,
     });
     if (!settlementRow) throw Errors.notFound("Settlement not found");
-    await requireMembership(settlementRow.groupId, auth.id);
+    await requireActiveMembership(settlementRow.groupId, auth.id);
     if (settlementRow.fromUserId !== auth.id) {
       throw Errors.forbidden("Only the payer can confirm this settlement");
     }
@@ -703,7 +703,7 @@ export default async function settlementRoutes(app: FastifyInstance) {
         include: settlementInclude,
       });
       if (!settlementRow) throw Errors.notFound("Settlement not found");
-      await requireMembership(settlementRow.groupId, auth.id);
+      await requireActiveMembership(settlementRow.groupId, auth.id);
       if (settlementRow.fromUserId !== auth.id) {
         throw Errors.forbidden("Only the payer can execute this settlement");
       }
@@ -811,11 +811,13 @@ export default async function settlementRoutes(app: FastifyInstance) {
   // expense response.
   //
   // Access: any member of the settlement's group may read it, enforced through
-  // the same `requireMembership` helper every mutating route uses — there is no
-  // second authorization path here. A settlement that does not exist is a 404;
-  // one the caller may not inspect is a 403. That distinction is deliberate
-  // (clients need to tell "gone" from "not yours") and leaks only the existence
-  // of an opaque identifier, never any amount, party, group, or on-chain detail.
+  // the same `requireMembership` helper the mutating routes build on
+  // (`requireActiveMembership`) — there is no second authorization path here,
+  // only the read's deliberate lack of the archived-group refusal. A settlement
+  // that does not exist is a 404; one the caller may not inspect is a 403. That
+  // distinction is deliberate (clients need to tell "gone" from "not yours") and
+  // leaks only the existence of an opaque identifier, never any amount, party,
+  // group, or on-chain detail.
   //
   // The response never includes a signed or unsigned XDR, a token, provider
   // credentials, or upstream error text — see src/services/settlement-status.ts.

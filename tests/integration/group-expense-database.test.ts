@@ -501,3 +501,101 @@ describe("group audit feed on a real Postgres (#649)", () => {
     expect(actions).toContain("group.leave");
   });
 });
+
+/**
+ * Issue #648 — an archived group stays readable to its members but is closed to
+ * new state. Every mutation route must answer 403 for a member of a group whose
+ * `archived` flag is set, while reads of that same group keep returning 200.
+ *
+ * A mocked `src/db` cannot prove this ordering matters: it hands back whatever
+ * the test sets, so it happily runs the handler past a guard that should have
+ * stopped the request. Driving the real HTTP path against Postgres is what
+ * shows the guard fires *before* the expense/settlement row is written, and
+ * that the write the route would otherwise perform never reaches the database.
+ */
+describe("archived-group mutation lockout on a real Postgres (#648)", () => {
+  let closedGroupId: string;
+  let closedExpenseId: string;
+
+  it("archives a group that still has an open expense", async () => {
+    const g = await call("POST", "/groups", owner, { name: "Closed Book" });
+    expect(g.statusCode).toBe(200);
+    closedGroupId = g.json().group.id;
+
+    // `member` has to be a real member before anything is asserted, so that a
+    // later 403 can only be about archival, never about membership.
+    const invite = await call("POST", `/groups/${closedGroupId}/invite`, owner, {
+      maxUses: 5,
+    });
+    expect(invite.statusCode).toBe(200);
+    const joined = await call("POST", "/groups/join", member, {
+      code: invite.json().invite.code,
+    });
+    expect(joined.statusCode).toBe(200);
+
+    const e = await call("POST", `/groups/${closedGroupId}/expenses`, owner, {
+      title: "Open before archive",
+      amount: EXPENSE_AMOUNT,
+      assetCode: "XLM",
+      splitType: "equal",
+      shares: [{ userId: owner.id }, { userId: member.id }],
+    });
+    expect(e.statusCode).toBe(200);
+    closedExpenseId = e.json().expense.id;
+
+    const a = await call("POST", `/groups/${closedGroupId}/archive`, owner);
+    expect(a.statusCode).toBe(200);
+    expect(
+      await prisma.group.findUniqueOrThrow({
+        where: { id: closedGroupId },
+        select: { archived: true },
+      })
+    ).toMatchObject({ archived: true });
+  });
+
+  it("refuses a new expense, and the row count is unchanged", async () => {
+    const res = await call("POST", `/groups/${closedGroupId}/expenses`, owner, {
+      title: "Too late",
+      amount: EXPENSE_AMOUNT,
+      assetCode: "XLM",
+      splitType: "equal",
+      shares: [{ userId: owner.id }, { userId: member.id }],
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toMatch(/archived/i);
+    // Only the pre-archive expense survives.
+    expect(await prisma.expense.count({ where: { groupId: closedGroupId } })).toBe(1);
+  });
+
+  it("refuses a settlement built against the archived group", async () => {
+    const res = await call("POST", `/groups/${closedGroupId}/settlements`, member, {
+      toUserId: owner.id,
+      amount: "1.0000000",
+      assetCode: "XLM",
+    });
+    expect(res.statusCode).toBe(403);
+    expect(await prisma.settlement.count({ where: { groupId: closedGroupId } })).toBe(0);
+  });
+
+  it("refuses to update or delete the expense that already exists", async () => {
+    const patch = await call("PATCH", `/expenses/${closedExpenseId}`, owner, {
+      title: "Renamed after archive",
+    });
+    expect(patch.statusCode).toBe(403);
+
+    const del = await call("DELETE", `/expenses/${closedExpenseId}`, owner);
+    expect(del.statusCode).toBe(403);
+
+    // Both refusals left the expense in place.
+    expect(await prisma.expense.count({ where: { id: closedExpenseId } })).toBe(1);
+  });
+
+  it("still lets members read the archived group's expenses and balances", async () => {
+    const list = await call("GET", `/groups/${closedGroupId}/expenses`, member);
+    expect(list.statusCode).toBe(200);
+    expect(list.json().expenses).toHaveLength(1);
+
+    const balances = await call("GET", `/groups/${closedGroupId}/balances`, member);
+    expect(balances.statusCode).toBe(200);
+  });
+});

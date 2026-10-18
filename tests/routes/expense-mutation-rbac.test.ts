@@ -613,11 +613,10 @@ describe("Settlement execution RBAC — POST /api/settlements/execute", () => {
 });
 
 describe("Non-existent group — expense mutations return 404", () => {
-  it.skip("returns 404 for create expense on unknown group - Zod validation runs before route guard", async () => {
+  it("returns 404 for create expense on unknown group", async () => {
     prisma.group.findUnique.mockResolvedValue(null);
     prisma.groupMember.findUnique.mockResolvedValue(null);
 
-    
     const res = await app.inject({
       method: "POST",
       url: "/groups/nonexistent_group/expenses",
@@ -627,7 +626,7 @@ describe("Non-existent group — expense mutations return 404", () => {
         amount: "100",
         assetCode: "XLM",
         splitType: "equal",
-        shares: [],
+        shares: [{ userId: MEMBER_USER, shareAmount: "100" }],
       },
     });
 
@@ -635,15 +634,18 @@ describe("Non-existent group — expense mutations return 404", () => {
   });
 });
 
-describe("Archived group — expense mutations return 403", () => {
-  it.skip("returns 403 for create expense on archived group - Zod validation runs before route guard", async () => {
+describe("Archived group — expense mutations return 403 (#648)", () => {
+  it("refuses a member's create on an archived group", async () => {
+    // MEMBER_USER is still a member (beforeEach default); only the group has
+    // been archived. Reads must survive archival, but a write to a closed group
+    // does not — the guard, not body validation, is what produces the 403, so
+    // the payload stays schema-valid.
     prisma.group.findUnique.mockResolvedValue({
       id: GROUP_ID,
       name: "Old Group",
       archived: true,
     });
 
-    
     const res = await app.inject({
       method: "POST",
       url: `/groups/${GROUP_ID}/expenses`,
@@ -653,10 +655,29 @@ describe("Archived group — expense mutations return 403", () => {
         amount: "100",
         assetCode: "XLM",
         splitType: "equal",
-        shares: [],
+        shares: [{ userId: MEMBER_USER, shareAmount: "100" }],
       },
     });
 
     expect(res.statusCode).toBe(403);
+    expect(prisma.expense.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses to update an expense in an archived group", async () => {
+    prisma.group.findUnique.mockResolvedValue({
+      id: GROUP_ID,
+      name: "Old Group",
+      archived: true,
+    });
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/expenses/${EXPENSE_ID}`,
+      headers: { authorization: bearer(MEMBER_USER) },
+      payload: { title: "Renamed After Archive" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(prisma.expense.update).not.toHaveBeenCalled();
   });
 });
