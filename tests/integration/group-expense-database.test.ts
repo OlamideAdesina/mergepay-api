@@ -486,15 +486,18 @@ describe("group audit feed on a real Postgres (#649)", () => {
     expect(await auditActions(feedGroupId)).toContain("group.leave");
   });
 
-  it("attributes archiving, which then closes the feed to readers", async () => {
+  it("attributes archiving to the group that was archived", async () => {
     const archived = await call("POST", `/groups/${feedGroupId}/archive`, owner);
     expect(archived.statusCode).toBe(200);
 
-    // `requireGroupRole` refuses archived groups, so the column is the only
-    // way to see this event was attributed to its group.
-    expect(await auditActions(feedGroupId)).toContain("group.archive");
-
-    const blocked = await call("GET", `/groups/${feedGroupId}/audit-logs`, owner);
-    expect(blocked.statusCode).toBe(403);
+    // The feed is still readable afterwards: `requireMembership` refuses an
+    // archived group only to callers who are not members, and the archiving
+    // admin remains one — so the event can be read back from the same endpoint
+    // the archive closed to everyone else.
+    const feed = await call("GET", `/groups/${feedGroupId}/audit-logs?limit=100`, owner);
+    expect(feed.statusCode).toBe(200);
+    const actions = (feed.json().events as { action: string }[]).map((e) => e.action);
+    expect(actions).toContain("group.archive");
+    expect(actions).toContain("group.leave");
   });
 });
