@@ -3,8 +3,10 @@
  *
  * Centralizes the request-shape validation for the SEP-24 flows so every entry
  * point — the interactive deposit/withdraw start (`POST /anchors/*` in
- * src/routes/anchors.ts) and any future SEP-24 surface — rejects malformed
- * payloads with the same rules, before they reach a service or the database:
+ * src/routes/anchors.ts), its `/api/sep24/*` aliases, and Mergepay's own
+ * withdrawal surface (`POST /withdraw`, `POST /withdraw/:id/confirm`,
+ * `GET /withdraw/:id` in src/routes/withdraw.ts) — rejects malformed payloads
+ * with the same rules, before they reach a service or the database:
  *
  *   - asset code: alphanumeric, 1-12 chars (upper-cased on parse);
  *   - amount: a positive, precision-safe Stellar decimal when supplied;
@@ -19,9 +21,11 @@
  */
 import { z } from "zod";
 import {
+  mpMemoSchema,
   stellarAmountSchema,
   stellarPublicKeySchema,
 } from "../lib/stellar-validation";
+import { paginationQuerySchema } from "../lib/pagination";
 
 // ─── Callback query-parameter schema ─────────────────────────────────────────
 
@@ -91,6 +95,32 @@ export const sep24TransactionQuerySchema = z
   .strict();
 
 export type Sep24TransactionQuery = z.infer<typeof sep24TransactionQuerySchema>;
+
+/**
+ * Query parameters for SEP-24 transaction *list* polling
+ * (`GET /api/sep24/transactions`).
+ *
+ * The spec's `/transactions` endpoint takes the transfer direction and a page
+ * bound, and nothing else that Mergepay can answer: it has no anchor-side text
+ * search, and its sessions carry no asset filter that a client could not read
+ * from the returned rows. So the schema is the shared pagination contract —
+ * `limit`, `cursor`, `order`, strict about unknown keys exactly as every other
+ * list endpoint — extended with the two SEP-24 parameters this API honours.
+ *
+ * `kind` is an enum rather than a free string because it goes straight into a
+ * database filter: `?kind=depos` is a client bug, and answering it with an
+ * empty list would report "no deposits" instead of "you misspelled the kind".
+ *
+ * `lang` is accepted for parity with the other SEP-24 schemas. It selects the
+ * localisation of an anchor `message`, which Mergepay serves from stored
+ * history, so it is validated and then ignored rather than rejected.
+ */
+export const sep24TransactionsQuerySchema = paginationQuerySchema.extend({
+  kind: z.enum(["deposit", "withdrawal"]).optional(),
+  lang: z.string().min(2).max(10).optional(),
+});
+
+export type Sep24TransactionsQuery = z.infer<typeof sep24TransactionsQuerySchema>;
 
 /** A Stellar transaction hash is a 32-byte value encoded as 64 hex chars. */
 export const sep24StellarTransactionHashSchema = z
@@ -323,3 +353,45 @@ export type Sep24DepositRequest = z.infer<typeof sep24DepositRequestSchema>;
 export type Sep24WithdrawRequest = z.infer<typeof sep24WithdrawRequestSchema>;
 export type Sep24CallbackQuery = z.infer<typeof sep24CallbackQuerySchema>;
 export type Sep24InitQuery = z.infer<typeof sep24InitQuerySchema>;
+
+// ─── Mergepay's own withdrawal routes (src/routes/withdraw.ts) ───────────────
+
+/**
+ * Body of `POST /withdraw` — Mergepay's withdrawal initiation, which is a
+ * concrete SEP-24 withdrawal rather than a generic interactive start.
+ *
+ * Shape only, deliberately: the route answers a non-positive amount with
+ * `INVALID_AMOUNT` and an asset it does not settle with `UNSUPPORTED_ASSET`,
+ * and both codes are part of its published contract. A schema that re-checked
+ * those would answer `VALIDATION_ERROR` instead and swallow them. So the schema
+ * asks "is this a decimal and an asset code at all", and the handler asks "may
+ * this be withdrawn".
+ *
+ * `memo` is the Mergepay-prefixed memo (`MP:<code>`) this route has always
+ * taken, not the SEP-24 `memo`/`memoType` pair the interactive flows take,
+ * because the value is recorded against the user's own account rather than
+ * negotiated with an anchor.
+ */
+export const sep24WithdrawalRequestBodySchema = z
+  .object({
+    amount: sep24AmountShapeSchema,
+    assetCode: sep24AssetCodeShapeSchema,
+    memo: mpMemoSchema.optional(),
+  })
+  .strict();
+
+/**
+ * The `:id` path parameter shared by `GET /withdraw/:id` and
+ * `POST /withdraw/:id/confirm`.
+ *
+ * Presence and nothing more — the rule both routes have always applied, written
+ * once so the pair cannot drift apart. A length cap or an alphabet here would
+ * narrow a shipped contract to protect nothing the owner check in either
+ * handler (`withdrawal.userId !== auth.id`) does not already.
+ */
+export const sep24WithdrawalParamsSchema = z.object({ id: z.string().min(1) });
+
+export type Sep24WithdrawalRequestBody = z.infer<
+  typeof sep24WithdrawalRequestBodySchema
+>;
+export type Sep24WithdrawalParams = z.infer<typeof sep24WithdrawalParamsSchema>;
