@@ -195,6 +195,40 @@ describe("SEP-10 authentication integration", () => {
     expect(mocks.prisma.user.upsert).not.toHaveBeenCalled();
   });
 
+  it("rejects an expired challenge with a 401 CHALLENGE_EXPIRED error", async () => {
+    const client = Keypair.random();
+    const transaction = WebAuth.buildChallengeTx(
+      serverKeypair(),
+      client.publicKey(),
+      config.SEP10_HOME_DOMAIN,
+      -60,
+      config.networkPassphrase,
+      config.WEB_AUTH_DOMAIN
+    );
+    const signedXdr = signChallenge(transaction, client);
+
+    const response = await verifyEnvelope(signedXdr);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json().code).toBe("CHALLENGE_EXPIRED");
+    expect(mocks.prisma.user.upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a challenge with a tampered or invalid signature with UNAUTHORIZED", async () => {
+    const client = Keypair.random();
+    const challenge = await requestChallenge(client.publicKey());
+    const transaction = new Transaction(challenge.json().transaction, config.networkPassphrase);
+    // Sign with a different keypair so the signature is completely invalid
+    transaction.sign(Keypair.random());
+    const signedXdr = transaction.toXDR();
+
+    const response = await verifyEnvelope(signedXdr);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json().code).toBe("UNAUTHORIZED");
+    expect(mocks.prisma.user.upsert).not.toHaveBeenCalled();
+  });
+
   it("allows each signed challenge to be redeemed only once", async () => {
     const client = Keypair.random();
     const challenge = await requestChallenge(client.publicKey());

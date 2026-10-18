@@ -11,7 +11,7 @@ import errorHandlerPlugin from "./plugins/error-handler";
 import idempotencyPlugin from "./plugins/idempotency";
 import loggingPlugin from "./plugins/logging";
 import openAPIPlugin from "./plugins/openapi";
-import rateLimitPlugin from "./plugins/rate-limit";
+import rateLimitPlugin, { type RateLimitRegistration } from "./plugins/rate-limit";
 import { validateAssetConfig } from "./services/assets";
 import authRoutes from "./routes/auth";
 import groupRoutes from "./routes/groups";
@@ -20,6 +20,7 @@ import settlementRoutes from "./routes/settlements";
 import treasuryRoutes from "./routes/treasury";
 import treasuryProposalRoutes from "./routes/treasury-proposals";
 import treasurySignatureRoutes from "./routes/treasury-signatures";
+import treasuryMultisigRoutes from "./routes/treasury-multisig";
 import anchorRoutes from "./routes/anchors";
 import withdrawalRoutes from "./routes/withdraw";
 import historyRoutes from "./routes/history";
@@ -63,6 +64,18 @@ export interface BuildAppOptions {
     url?: string;
     config?: Record<string, unknown>;
   }) => void;
+  /**
+   * Throttle mode for this instance; defaults to `"enforced"`.
+   *
+   * `"off"` boots the app with no rate limiter. A suite that reuses one
+   * `buildApp()` across many requests needs it: authenticated budgets key on the
+   * user, not the client address, so rotating `remoteAddress` does not buy a
+   * fresh budget and a long database-backed file can run one actor's tier out and
+   * then fail an unrelated assertion with a 429. Only a suite whose subject is
+   * *not* the limiter should pass this — the limiter's own suites, and every
+   * production caller, keep the default. See src/plugins/rate-limit.ts.
+   */
+  rateLimit?: RateLimitRegistration;
 }
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -231,7 +244,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // in src/lib/rate-limit.ts and are named by the routes they guard. Registering
   // it here — before the route plugins, and before groupAccessPlugin below —
   // is what lets its onRoute hook append each limit to the right hook.
-  await app.register(rateLimitPlugin);
+  //
+  // `options.rateLimit` is the suite-facing escape hatch described on
+  // `BuildAppOptions`: with `"off"` nothing registers, so route-level
+  // `config.rateLimit` values stay inert and the app answers every request. The
+  // default keeps the limiter, and production callers pass no options.
+  await app.register(rateLimitPlugin, {
+    rateLimit: options.rateLimit ?? "enforced",
+  });
   // Multipart limits, all explicit. Only /uploads/receipt consumes a multipart
   // body (the SEP-24 anchor flow is JSON end to end), so these bound that one
   // route without touching the JSON routes, which keep their own bodyLimit.
@@ -269,6 +289,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     "/treasury-transactions/:id/confirm",
     "/api/treasury/proposals",
     "/api/treasury/proposals/:id/signatures",
+    "/treasury/propose",
+    "/treasury/:id/sign",
     "/anchors/deposit",
     "/anchors/withdraw",
     "/api/sep24/deposit",
@@ -335,6 +357,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(treasuryRoutes);
   await app.register(treasuryProposalRoutes);
   await app.register(treasurySignatureRoutes);
+  await app.register(treasuryMultisigRoutes);
   await app.register(anchorRoutes);
   await app.register(withdrawalRoutes);
   await app.register(historyRoutes);

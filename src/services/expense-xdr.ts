@@ -72,3 +72,16 @@ export function validateExpenseXdr(
 ): SignedXdrValidation {
   return validateSignedXdr(signedXdr, expensePaymentIntent(expense));
 }
+
+/**
+ * Validate and submit a signed expense XDR after checking it against the stored intent.
+ */
+export async function submitExpenseXdr(
+  signedXdr: string,
+  expense: ExpenseIntentRecord
+): Promise<string> {
+  validateExpenseXdr(signedXdr, expense);
+  // Proceed to submit signed transaction via stellar service
+  const { stellar } = await import("./stellar.js");
+  return stellar.submitSigned(signedXdr);
+}

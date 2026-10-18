@@ -47,6 +47,8 @@ import { prisma } from "../db";
 import { Errors } from "../errors";
 import { requireUser } from "./auth";
 import {
+  requireActiveAdmin,
+  requireActiveMembership,
   requireAdmin,
   requireMembership,
   type MembershipContext,
@@ -88,13 +90,23 @@ function isGroupGuard(fn: unknown): boolean {
  * - expense does not exist (`fromExpense` routes) → 404 NOT_FOUND, before
  *   any membership lookup
  * - caller not a member, or member without the required role → 403 FORBIDDEN
+ * - with `active: true` (mutating routes), a member of an *archived* group →
+ *   403 FORBIDDEN; without it (reads), an archived group stays accessible to
+ *   its members so history survives archival (issue #648)
  */
 export function requireGroupRole(
   role: GroupRole,
-  opts: { param: GroupIdParam; fromExpense?: boolean }
+  opts: { param: GroupIdParam; fromExpense?: boolean; active?: boolean }
 ): preHandlerAsyncHookHandler {
   const paramsSchema = z.object({ [opts.param]: groupIdSchema });
-  const check = role === "admin" ? requireAdmin : requireMembership;
+  const active = opts.active === true;
+  const check = active
+    ? role === "admin"
+      ? requireActiveAdmin
+      : requireActiveMembership
+    : role === "admin"
+      ? requireAdmin
+      : requireMembership;
 
   const guard: MarkedGuard = async function groupRoleGuard(req: FastifyRequest) {
     const auth = requireUser(req);

@@ -176,6 +176,9 @@ describe("sensitive routes carry the tighter per-route budget", () => {
     ["POST", "/groups/:groupId/treasury/proposals", "treasuryPropose"],
     ["POST", "/api/treasury/proposals/:id/signatures", "treasurySubmit"],
     ["POST", "/groups/:groupId/treasury/proposals/:proposalId/sign", "treasurySubmit"],
+    // Issue #657's collection-style aliases of the same two operations.
+    ["POST", "/treasury/propose", "treasuryPropose"],
+    ["POST", "/treasury/:id/sign", "treasurySubmit"],
     // Anchor / SEP-24. Initiation fans out upstream, so it is the tightest.
     ["POST", "/anchors/deposit", "anchorInit"],
     ["POST", "/anchors/withdraw", "anchorInit"],
@@ -185,12 +188,27 @@ describe("sensitive routes carry the tighter per-route budget", () => {
     ["GET", "/anchors", "anchorPoll"],
     ["GET", "/anchors/sessions", "anchorPoll"],
     ["GET", "/anchors/sessions/:id", "anchorPoll"],
+    // SEP-24 status polling (#651) — same budget as the session reads, because
+    // it is the same DB-only status read under a spec-shaped response.
+    ["GET", "/api/sep24/transaction", "anchorPoll"],
+    // The list form of the same poll (#655): one page of the same DB-only
+    // status reads, so it takes the same budget rather than a new one.
+    ["GET", "/api/sep24/transactions", "anchorPoll"],
     ["POST", "/anchors/webhook", "anchorWebhook"],
     ["POST", "/api/sep24/callback", "sep24Callback"],
     ["POST", "/api/webhooks/sep24", "sep24Webhook"],
     // Group creation and history.
     ["POST", "/groups", "groupCreate"],
     ["GET", "/history", "history"],
+    // Issue #668 — the categories the table did not model: the one public
+    // unauthenticated read, the membership writes, outbound-webhook
+    // registration, and the only multipart upload route.
+    ["GET", "/api/exchange-rates", "exchangeRates"],
+    ["POST", "/groups/:id/invite", "groupInvite"],
+    ["POST", "/groups/join", "groupJoin"],
+    ["POST", "/api/webhooks", "webhookCreate"],
+    ["POST", "/groups/:groupId/webhooks", "webhookCreate"],
+    ["POST", "/uploads/receipt", "uploadReceipt"],
   ];
 
   it("covers every route the application declares a limit on", () => {

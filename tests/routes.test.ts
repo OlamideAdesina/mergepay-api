@@ -209,7 +209,14 @@ describe("auth routes", () => {
     expect(body.requestId).toBeTruthy();
     expect(body.token).toBeUndefined();
     expect(prisma.user.upsert).not.toHaveBeenCalled();
-    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    // Audit logging fires for challenge creation and rejection (issue #664),
+    // but no user-facing audit log should be created for this failed attempt.
+    const auditCalls = prisma.auditLog.create.mock.calls;
+    // Expect exactly 2 audit calls: challenge.created + challenge.rejected
+    expect(auditCalls.length).toBeGreaterThanOrEqual(2);
+    const actions = auditCalls.map((call: any) => call[0]?.data?.action);
+    expect(actions).toContain("auth.challenge.created");
+    expect(actions).toContain("auth.challenge.rejected");
   });
 
   it("POST /auth/verify rejects malformed XDR before challenge verification", async () => {

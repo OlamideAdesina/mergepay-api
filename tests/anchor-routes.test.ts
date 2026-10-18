@@ -14,7 +14,7 @@ const h = vi.hoisted(() => {
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     auditLog: { create: vi.fn() },
-    statusHistory: { create: vi.fn() },
+    statusHistory: { create: vi.fn(), findMany: vi.fn(async () => []) },
     $transaction: vi.fn(async (fn: any) => fn(prisma)),
     $disconnect: vi.fn(),
   };
@@ -186,7 +186,13 @@ describe("POST /anchors/webhook — status transitions", () => {
         action: "withdrawal.status_changed",
         entityType: "withdrawal",
         entityId: "wth_1",
-        metadata: { from: "processing", to: "completed", source: "webhook" },
+        metadata: {
+          from: "processing",
+          to: "completed",
+          source: "webhook",
+          // The anchor pushed this, not the withdrawal's owner.
+          actorType: "system",
+        },
       }),
     });
   });
@@ -251,6 +257,7 @@ describe("POST /anchors/sessions/:id/complete — transition + audit", () => {
           from: "incomplete",
           to: "pending_user_transfer_start",
           source: "user",
+          actorType: "user",
         },
       }),
     });

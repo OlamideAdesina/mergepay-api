@@ -190,6 +190,7 @@ See [.env.example](.env.example). Key ones:
 | `STELLAR_NETWORK` | `testnet` or `public` |
 | `HORIZON_URL` | Horizon server |
 | `SEP10_SIGNING_SECRET` | Server's SEP-10 signing key (`npm run gen:sep10key`) |
+| `SEP10_CHALLENGE_VALIDITY_SECONDS` | How long an issued SEP-10 challenge stays redeemable (default: 300, allowed 30–600) |
 | `WEB_URL` | Frontend origin allow-list for CORS + invite links (comma-separated; `*` for local dev) |
 | `ANCHOR_HOME_DOMAIN` | SEP-24 anchor home domain (default SDF test anchor) |
 | `ANCHOR_WEBHOOK_SECRET` | Shared secret for the anchor webhook |
@@ -547,6 +548,7 @@ Status tracking (`src/services/anchor.ts`, `src/services/anchor-status.ts`):
 | GET | `/groups/:id/balances` · `/groups/:id/ledger` | Balances & ledger |
 | POST/GET | `/groups/:id/treasury/*` · `/treasury-transactions/:id/confirm` | Treasury |
 | GET/POST | `/anchors` · `/anchors/deposit` · `/anchors/withdraw` · `/anchors/sessions/:id/complete` · `/anchors/sessions` · `/anchors/webhook` | Anchors |
+| POST/GET | `/withdraw` · `/withdraw/:id` · `/withdraw/:id/confirm` | SEP-24 withdrawals |
 | GET | `/history` | Cross-group history |
 | POST/GET | `/uploads/receipt` · `/uploads/:file` | Receipts |
 | GET | `/health` · `/health/live` · `/health/ready` | Liveness & readiness probes (see [HEALTH.md](HEALTH.md)) |
@@ -741,16 +743,81 @@ unknown keys rather than silently ignoring them:
   public key with checksum refinement
   ([`src/validations/sep10.ts`](src/validations/sep10.ts:28-39))
 - **`POST /auth/verify`**: validates `transaction` as canonical base64 XDR
-  (whole number of 4-byte words, max 50KB), optional `home_domain` and
-  `client_domain` as valid domains
-  ([`src/validations/sep10.ts`](src/validations/sep10.ts:108-125))
+  (whole number of 4-byte words, max 50KB), and `home_domain` / `client_domain`
+  as valid domains when they are present
+  ([`src/validations/sep10.ts`](src/validations/sep10.ts:168-176))
 
 Unknown query parameters are also rejected, so a client mistakenly sending
 `GET /auth?account=...` gets a 400 VALIDATION_ERROR instead of being silently
 ignored.
 
+**Domain claims (#659)** — the schema's question is shape; what the server does
+with those two values is decided by the route, before any envelope is parsed and
+before this server's challenge is consumed:
+
+- `client_domain`, and the legacy `clientDomain` spelling, → **400
+  CLIENT_DOMAIN_UNSUPPORTED**. This server performs no client-domain
+  verification ([`src/services/sep10.ts`](src/services/sep10.ts) refuses a
+  challenge envelope carrying that operation), so accepting the field and
+  dropping it left a wallet integration believing it had one.
+- a `home_domain` other than the one challenges are issued for (`SEP10_HOME_DOMAIN`,
+  compared case-insensitively) → **400 HOME_DOMAIN_MISMATCH**, naming the
+  expected domain.
+
+Both answer a question about the *request*, not the credential, so they add no
+way to probe how a signature check failed. Neither burns the challenge: a
+corrected retry of the same signed envelope still works.
+
+**Challenge lifetime.** `SEP10_CHALLENGE_VALIDITY_SECONDS` (default 300,
+accepted 30–600, bounded in [`src/config.ts`](src/config.ts)) is a single value
+shared by challenge generation and the redemption bounds check, so the two can
+never disagree about how long an envelope stays redeemable.
+
+**Store outages.** When the durable single-use store cannot be reached,
+verification fails closed with **503 SERVICE_UNAVAILABLE** instead of a 401:
+still no session, but the client is told to retry and an incident shows up as an
+unavailable dependency rather than as a wave of bad credentials. The database's
+own error text is never returned.
+
 Tests: [`tests/validations/sep10.test.ts`](tests/validations/sep10.test.ts),
-[`tests/sep10-request-validation.test.ts`](tests/sep10-request-validation.test.ts).
+[`tests/sep10-request-validation.test.ts`](tests/sep10-request-validation.test.ts),
+[`tests/sep10-generation-and-redemption.test.ts`](tests/sep10-generation-and-redemption.test.ts).
+
+### SEP-24 withdrawal request validation (#663)
+
+`POST /withdraw`, `POST /withdraw/:id/confirm` and `GET /withdraw/:id` were the
+three SEP-24 withdrawal routes that parsed their input inline and carried no
+`schema` at all, so they were invisible in `/docs`. They now parse against
+shared Zod schemas and document the same contract:
+
+- **Withdrawal body** — `sep24WithdrawalRequestBodySchema`
+  ([`src/validations/sep24.ts`](src/validations/sep24.ts)): a decimal amount
+  with at most 7 fractional places, a 1–12 character alphanumeric asset code,
+  an optional `MP:`-prefixed memo, strict about unknown keys. Positivity and
+  asset *support* stay in the handler, so `INVALID_AMOUNT` and
+  `UNSUPPORTED_ASSET` keep their own answers instead of being swallowed by a
+  generic validation error.
+- **Signed envelope** — `POST /withdraw/:id/confirm` takes the same
+  `signedXdrRequestSchema` as the settlement and treasury confirmations
+  ([`src/validations/stellar-transaction.ts`](src/validations/stellar-transaction.ts)):
+  canonical base64 that the SDK can decode as a transaction envelope. Any other
+  string is a 400 naming `signedXdr` *before* the anchor's auth endpoint is
+  contacted; previously it was forwarded upstream and came back as a 502.
+- **`:id`** — one `sep24WithdrawalParamsSchema` shared by both `:id` routes, so
+  the pair cannot drift apart. Its rule is presence, which is what both routes
+  have always applied.
+- All three are annotated `openApiBody(..., { enforce: false })`, so the Zod
+  parse in the handler stays the only validator and every rejection arrives in
+  the `VALIDATION_ERROR` envelope with `details` and `issues`.
+
+`POST /withdraw/:id/confirm` answers with the withdrawal **flat**
+(`{ id, status, transaction_id, … }`), while initiation and the read route wrap
+the same record under a `withdrawal` key. The annotation documents that as it
+is: reshaping a published response is a client-visible change, not a validation
+one.
+
+Tests: [`tests/withdraw.test.ts`](tests/withdraw.test.ts),
+[`tests/openapi-annotations.test.ts`](tests/openapi-annotations.test.ts).
 
 ## Deployment
 

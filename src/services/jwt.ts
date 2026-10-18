@@ -79,6 +79,7 @@ export const jwtClaimsSchema = z.object({
   exp: z.number().optional(),
   nbf: z.number().optional(),
   jti: z.string().optional(),
+  scope: z.union([z.string(), z.array(z.string())]).optional(),
 });
 
 /** The validated session payload. */

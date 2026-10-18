@@ -11,7 +11,7 @@ import {
 } from "../lib/openapi";
 import { Errors } from "../errors";
 import { requireUser } from "../plugins/auth";
-import { requireMembership } from "../services/access";
+import { requireActiveMembership, requireMembership } from "../services/access";
 import { requireGroupRole } from "../plugins/group-access";
 import {
   computeShares,
@@ -68,7 +68,7 @@ export default async function expenseRoutes(app: FastifyInstance) {
     "/groups/:id/expenses",
     {
       ...createLimit,
-      preHandler: requireGroupRole("member", { param: "id" }),
+      preHandler: requireGroupRole("member", { param: "id", active: true }),
       schema: {
         tags: ["Expenses"],
         summary: "Create an expense in a group",
@@ -255,7 +255,7 @@ export default async function expenseRoutes(app: FastifyInstance) {
   app.patch(
     "/expenses/:id",
     {
-      preHandler: requireGroupRole("member", { param: "id", fromExpense: true }),
+      preHandler: requireGroupRole("member", { param: "id", fromExpense: true, active: true }),
       schema: {
         tags: ["Expenses"],
         summary: "Update an expense",
@@ -280,7 +280,7 @@ export default async function expenseRoutes(app: FastifyInstance) {
     const updated = await prisma.$transaction(async (tx) => {
       const expense = await tx.expense.findUnique({ where: { id } });
       if (!expense) throw Errors.notFound("Expense not found");
-      const ctx = await requireMembership(expense.groupId, auth.id, tx);
+      const ctx = await requireActiveMembership(expense.groupId, auth.id, tx);
       if (expense.payerUserId !== auth.id && ctx.role !== "admin") {
         throw Errors.forbidden("Only the payer or an admin can edit this expense");
       }
@@ -313,7 +313,7 @@ export default async function expenseRoutes(app: FastifyInstance) {
   app.delete(
     "/expenses/:id",
     {
-      preHandler: requireGroupRole("member", { param: "id", fromExpense: true }),
+      preHandler: requireGroupRole("member", { param: "id", fromExpense: true, active: true }),
       schema: {
         tags: ["Expenses"],
         summary: "Delete an expense",
@@ -338,7 +338,7 @@ export default async function expenseRoutes(app: FastifyInstance) {
         include: { shares: true },
       });
       if (!found) throw Errors.notFound("Expense not found");
-      const ctx = await requireMembership(found.groupId, auth.id, tx);
+      const ctx = await requireActiveMembership(found.groupId, auth.id, tx);
       if (found.payerUserId !== auth.id && ctx.role !== "admin") {
         throw Errors.forbidden("Only the payer or an admin can delete this expense");
       }
