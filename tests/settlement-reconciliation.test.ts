@@ -45,6 +45,7 @@ vi.mock("../src/services/stellar", () => ({
 vi.mock("../src/services/audit", () => ({
   audit: h.audit,
   auditTx: vi.fn(),
+  logActionTx: vi.fn(),
 }));
 vi.mock("../src/services/horizonService", () => ({
   verifyTransactionMemo: h.verifyTransactionMemo,

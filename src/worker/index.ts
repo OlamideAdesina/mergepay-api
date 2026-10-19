@@ -38,6 +38,7 @@ import { prisma } from "../db";
 import { isIntentExpired } from "../lib/time-bounds";
 import { stellar } from "../services/stellar";
 import { audit } from "../services/audit";
+import { AuditAction } from "../services/audit-actions";
 import { processPendingWebhookDeliveries } from "../services/webhook";
 import { expireStaleProposals } from "./cleanupProposals";
 import {
@@ -399,6 +400,7 @@ async function confirmSubmission(params: {
   await audit({
     userId: null,
     groupId: job.groupId,
+    actorType: "worker",
     action: "settlement.submitted_to_stellar",
     entityType: "settlement",
     entityId: job.id,
@@ -1180,7 +1182,11 @@ async function reconcileSingleAnchor(
     source: "poll",
     expectedCurrentStatus: job.status,
     rawStatus: result.rawStatus ?? undefined,
-    reason: result.status === "error" ? result.message : undefined,
+    // For a failure the poll's own message is the whole story; for every other
+    // status the anchor's text is what the user should see, and it was
+    // previously dropped here — leaving the transition's history row with no
+    // reason at all for the polls that advance most sessions.
+    reason: result.status === "error" ? result.message : result.statusMessage,
     extraData: {
       lastPolledAt: now,
       failureReason: result.status === "error" ? result.message ?? null : null,
@@ -1222,6 +1228,7 @@ async function reconcileSingleAnchor(
 
   if (AUDITABLE_ANCHOR_STATUSES.has(result.status)) {
     await audit({
+      actorType: "worker",
       action: `anchor.session.${result.status}`,
       entityType: "anchor_session",
       entityId: job.id,
@@ -1618,9 +1625,14 @@ export async function expireStaleTreasuryProposals(): Promise<void> {
  *
  * A transient database or Horizon error is retried in-cycle with bounded,
  * jittered exponential backoff. When the budget is exhausted the failure is
- * *recorded* (health counters) and *logged as critical* — the dead-letter
- * signal for a sweep task, which keeps no row of its own — and the cycle
- * continues: one failing task must not starve the other eight.
+ * *recorded* three ways — health counters, a critical log line, and a durable
+ * `worker.task.dead_letter` audit row — and the cycle continues: one failing
+ * task must not starve the other eight.
+ *
+ * The audit row is what makes the dead letter survive a restart. A sweep task
+ * keeps no row of its own, so before it the only traces were process memory
+ * (`getWorkerHealth`) and one streamed log line, both of which are gone by the
+ * time an operator asks what the worker stopped doing.
  */
 async function runCycleTask<T>(
   taskName: string,
@@ -1651,10 +1663,30 @@ async function runCycleTask<T>(
     });
   } catch (error) {
     // Budget exhausted (or a permanent/indeterminate failure): log critical,
-    // count it, and let the cycle go on. The `error` field carries the
-    // sanitized failure so log-based alerting sees the real cause.
+    // count it, persist the dead letter, and let the cycle go on. The `error`
+    // field carries the sanitized failure so log-based alerting sees the real
+    // cause.
     recordTaskFailure(taskName);
     recordTaskDeadLetter(taskName);
+    // Best-effort by design: `audit` swallows its own failures, so a broken
+    // audit store can never take down the rest of the cycle.
+    await audit({
+      userId: null,
+      groupId: null,
+      actorType: "worker",
+      action: AuditAction.WORKER_TASK_DEAD_LETTER,
+      entityType: "worker_task",
+      entityId: taskName,
+      outcome: "failure",
+      metadata: {
+        jobType: "worker_cycle",
+        task: taskName,
+        reason: safeFailureMessage(error),
+        category: classifyJobFailure(error),
+        maxAttempts: CYCLE_TASK_RETRY_POLICY.maxAttempts,
+        workerId: WORKER_ID,
+      },
+    });
     log.error(
       {
         jobType: "worker_cycle",

@@ -78,7 +78,7 @@ async function sep24CallbackRoute(app: FastifyInstance) {
   );
 
   app.post(
-    "/api/webhooks/sep24",
+    "/webhooks/sep24",
     {
       ...rateLimited("sep24Webhook"),
       schema: {
@@ -115,7 +115,7 @@ async function sep24CallbackRoute(app: FastifyInstance) {
         // signature was malformed, stale, or simply wrong hands an attacker a
         // free oracle for probing the secret.
         req.log.warn(
-          { reason: verification.reason, route: "/api/webhooks/sep24" },
+          { reason: verification.reason, route: "/webhooks/sep24" },
           "rejected SEP-24 callback"
         );
         throw Errors.unauthorized("Invalid webhook signature");
@@ -175,7 +175,7 @@ async function webhookManagementRoutes(app: FastifyInstance) {
   // never included in any subsequent read: a caller who loses it registers a
   // new endpoint rather than recovering the old one, which keeps a leaked
   // response body from being enough to forge signed payloads later.
-  app.post("/api/webhooks", async (req, reply) => {
+  app.post("/webhooks", rateLimited("webhookCreate"), async (req, reply) => {
     const auth = requireUser(req);
     const body = registerSchema.parse(req.body);
 
@@ -245,7 +245,10 @@ async function webhookManagementRoutes(app: FastifyInstance) {
   const asMember = { preHandler: requireGroupRole("member", { param: "groupId" }) };
   const asAdmin = { preHandler: requireGroupRole("admin", { param: "groupId" }) };
 
-  app.post("/groups/:groupId/webhooks", asAdmin, async (req) => {
+  app.post(
+    "/groups/:groupId/webhooks",
+    { ...asAdmin, ...rateLimited("webhookCreate") },
+    async (req) => {
     const auth = requireUser(req);
     const { groupId } = paramsSchema.parse(req.params);
     const body = createSchema.parse(req.body);
@@ -300,6 +303,7 @@ async function webhookManagementRoutes(app: FastifyInstance) {
   });
 
   app.delete("/groups/:groupId/webhooks/:webhookId", asAdmin, async (req) => {
+    const auth = requireUser(req);
     const { groupId, webhookId } = webhookParamsSchema.parse(req.params);
 
     const webhook = await (prisma as any).webhook.findFirst({
@@ -308,6 +312,19 @@ async function webhookManagementRoutes(app: FastifyInstance) {
     if (!webhook) throw Errors.notFound("Webhook not found");
 
     await (prisma as any).webhook.delete({ where: { id: webhookId } });
+
+    // The URL and event list are recorded because the row itself is gone:
+    // without them the trail says a webhook existed but not which endpoint
+    // stopped receiving the group's events.
+    await audit({
+      userId: auth.id,
+      groupId,
+      action: "webhook.deregister",
+      entityType: "webhook",
+      entityId: webhookId,
+      metadata: { url: webhook.url, events: webhook.events },
+    });
+
     return { deleted: true };
   });
 

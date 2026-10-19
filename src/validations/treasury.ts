@@ -156,3 +156,25 @@ export const treasuryTxProposalCreateSchema = z
 export type TreasuryTxProposalCreateInput = z.infer<
   typeof treasuryTxProposalCreateSchema
 >;
+
+/**
+ * A co-signature submission for an in-flight treasury proposal (issue #657).
+ *
+ * Guards `POST /treasury/:id/sign`. `.strict()` is the point: a co-signer must
+ * never be able to hand the backend key material, so a body carrying anything
+ * besides `signedXdr` — a stray `secret`, a `seed`, a raw `signature` — is
+ * rejected outright rather than silently stripped on the way to the database.
+ *
+ * Shape only. Whether the envelope still matches the proposal's stored
+ * transaction, and whether each signature verifies against a live, authorized
+ * signer, is decided by `treasurySignaturesService.submitSignature`.
+ */
+export const treasurySignatureSubmitSchema = z
+  .object({
+    signedXdr: treasuryXdrSchema,
+  })
+  .strict();
+
+export type TreasurySignatureSubmitInput = z.infer<
+  typeof treasurySignatureSubmitSchema
+>;

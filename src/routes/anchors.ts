@@ -1,4 +1,4 @@
-import { FastifyInstance } from "fastify";
+import { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { timingSafeEqual } from "node:crypto";
 import { prisma } from "../db";
@@ -23,6 +23,7 @@ import {
   takeForPage,
 } from "../lib/pagination";
 import { serializeAnchorSession } from "../serializers";
+import { getStatusHistory } from "../services/status-history";
 import { validateAsset } from "../services/assets";
 import {
   sep24DepositRequestSchema,
@@ -99,7 +100,7 @@ export default async function anchorRoutes(app: FastifyInstance) {
   // -- start deposit / withdraw -----------------------------------------------
   async function start(
     kind: "deposit" | "withdrawal",
-    req: any,
+    req: FastifyRequest,
     requestSchema = kind === "deposit"
       ? sep24DepositRequestSchema
       : sep24WithdrawRequestSchema
@@ -334,7 +335,17 @@ export default async function anchorRoutes(app: FastifyInstance) {
         throw Errors.notFound("Anchor session not found");
       }
 
-      return { session: serializeAnchorSession(session) };
+      // The timeline lives in `status_history`, keyed by (entityType, entityId)
+      // rather than by a Prisma relation, so nothing reads it back on the
+      // session query itself. Without this the route answered every poll with
+      // an empty history, which is a claim about the transaction, not an
+      // absence of data.
+      const history = await getStatusHistory({
+        entityType: "anchor_session",
+        entityId: session.id,
+      });
+
+      return { session: serializeAnchorSession({ ...session, statusHistory: history }) };
     }
   );
 

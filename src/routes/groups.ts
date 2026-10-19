@@ -9,7 +9,7 @@ import { requireMembership, requireAdmin } from "../services/access";
 import { groupMembership, requireGroupRole } from "../middleware";
 import { stellar } from "../services/stellar";
 import { inviteCode } from "../services/codes";
-import { auditGroupMemberActionTx, auditTx } from "../services/audit";
+import { auditGroupMemberActionTx, auditTx, logActionTx } from "../services/audit";
 import { rateLimited } from "../lib/rate-limit";
 import { AuditAction } from "../services/audit-actions";
 import {
@@ -119,12 +119,14 @@ export default async function groupRoutes(app: FastifyInstance) {
           members: { create: { userId: auth.id, role: "admin" } },
         },
       });
-      await auditTx(tx, {
-        userId: auth.id,
+      await logActionTx(tx, {
+        actorId: auth.id,
         groupId: created.id,
-        action: "group.create",
-        entityType: "group",
-        entityId: created.id,
+        actorType: "user",
+        action: AuditAction.GROUP_CREATE,
+        resourceType: "group",
+        resourceId: created.id,
+        outcome: "success",
         metadata: { name: body.name },
       });
       return created;
@@ -420,6 +422,7 @@ export default async function groupRoutes(app: FastifyInstance) {
   app.post(
     "/groups/:id/invite",
     {
+      ...rateLimited("groupInvite"),
       preHandler: requireGroupRole("admin", { param: "id" }),
       schema: {
         tags: ["Groups"],
@@ -508,10 +511,11 @@ export default async function groupRoutes(app: FastifyInstance) {
 
         await auditTx(tx, {
           userId: auth.id,
+          groupId: id,
           action: "group.invite",
           entityType: "invitation",
           entityId: created.id,
-          metadata: { groupId: id, inviteePublicKey: body.publicKey },
+          metadata: { inviteePublicKey: body.publicKey },
         });
 
         return created;
@@ -540,10 +544,10 @@ export default async function groupRoutes(app: FastifyInstance) {
       });
       await auditTx(tx, {
         userId: auth.id,
+        groupId: id,
         action: "group.invite_code_create",
         entityType: "invite",
         entityId: created.id,
-        metadata: { groupId: id },
       });
       return created;
     });
@@ -554,6 +558,7 @@ export default async function groupRoutes(app: FastifyInstance) {
   app.post(
     "/groups/join",
     {
+      ...rateLimited("groupJoin"),
       schema: {
         tags: ["Groups"],
         summary: "Join a group with an invite code",
@@ -594,11 +599,14 @@ export default async function groupRoutes(app: FastifyInstance) {
           where: { id: invite.id },
           data: { uses: { increment: 1 } },
         });
-        await auditTx(tx, {
-          userId: auth.id,
-          action: "group.join",
-          entityType: "group",
-          entityId: invite.groupId,
+        await logActionTx(tx, {
+          actorId: auth.id,
+          groupId: invite.groupId,
+          actorType: "user",
+          action: AuditAction.GROUP_JOIN,
+          resourceType: "group",
+          resourceId: invite.groupId,
+          outcome: "success",
           metadata: { inviteId: invite.id },
         });
       });
@@ -655,6 +663,7 @@ export default async function groupRoutes(app: FastifyInstance) {
       });
       await auditTx(tx, {
         userId: auth.id,
+        groupId: id,
         action: "group.leave",
         entityType: "group",
         entityId: id,
@@ -912,6 +921,7 @@ export default async function groupRoutes(app: FastifyInstance) {
       });
       await auditTx(tx, {
         userId: auth.id,
+        groupId: id,
         action: "group.archive",
         entityType: "group",
         entityId: id,

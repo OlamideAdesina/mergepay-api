@@ -10,13 +10,15 @@
 import { describe, it, expect } from "vitest";
 import {
   Account,
+  Asset,
   BASE_FEE,
   Keypair,
+  Memo,
   Networks,
   Operation,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
-import { isValidXdr } from "../stellar-xdr";
+import { isValidXdr, validateTransactionIntent } from "../stellar-xdr";
 
 /** Build a valid, unsigned transaction envelope for the test network. */
 function buildXdr(): string {
@@ -117,5 +119,124 @@ describe("isValidXdr", () => {
     // The default argument must remain a usable passphrase — an undefined one
     // would make every call throw-and-return false, including valid XDRs.
     expect(isValidXdr(buildXdr())).toBe(true);
+  });
+});
+
+describe("validateTransactionIntent", () => {
+  it("accepts a valid payment XDR matching the expectation", () => {
+    const payer = Keypair.random();
+    const recipient = Keypair.random();
+    const tx = new TransactionBuilder(
+      new Account(payer.publicKey(), "100"),
+      { fee: BASE_FEE, networkPassphrase: Networks.TESTNET }
+    )
+      .addOperation(
+        Operation.payment({
+          destination: recipient.publicKey(),
+          asset: Asset.native(),
+          amount: "50.0000000",
+        })
+      )
+      .addMemo(Memo.text("EXP123"))
+      .setTimeout(300)
+      .build();
+
+    const result = validateTransactionIntent(tx.toXDR(), {
+      sourcePublicKey: payer.publicKey(),
+      destination: recipient.publicKey(),
+      assetCode: "XLM",
+      amount: "50.0000000",
+      memo: "EXP123",
+    }, Networks.TESTNET);
+
+    expect(result.valid).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("rejects XDR with an incorrect destination account", () => {
+    const payer = Keypair.random();
+    const recipient = Keypair.random();
+    const wrongRecipient = Keypair.random();
+    const tx = new TransactionBuilder(
+      new Account(payer.publicKey(), "100"),
+      { fee: BASE_FEE, networkPassphrase: Networks.TESTNET }
+    )
+      .addOperation(
+        Operation.payment({
+          destination: wrongRecipient.publicKey(),
+          asset: Asset.native(),
+          amount: "50.0000000",
+        })
+      )
+      .setTimeout(300)
+      .build();
+
+    const result = validateTransactionIntent(tx.toXDR(), {
+      sourcePublicKey: payer.publicKey(),
+      destination: recipient.publicKey(),
+      assetCode: "XLM",
+      amount: "50.0000000",
+    }, Networks.TESTNET);
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("destination mismatch");
+  });
+
+  it("rejects XDR with an altered payment amount", () => {
+    const payer = Keypair.random();
+    const recipient = Keypair.random();
+    const tx = new TransactionBuilder(
+      new Account(payer.publicKey(), "100"),
+      { fee: BASE_FEE, networkPassphrase: Networks.TESTNET }
+    )
+      .addOperation(
+        Operation.payment({
+          destination: recipient.publicKey(),
+          asset: Asset.native(),
+          amount: "999.0000000",
+        })
+      )
+      .setTimeout(300)
+      .build();
+
+    const result = validateTransactionIntent(tx.toXDR(), {
+      sourcePublicKey: payer.publicKey(),
+      destination: recipient.publicKey(),
+      assetCode: "XLM",
+      amount: "50.0000000",
+    }, Networks.TESTNET);
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("amount mismatch");
+  });
+
+  it("rejects XDR with a memo mismatch", () => {
+    const payer = Keypair.random();
+    const recipient = Keypair.random();
+    const tx = new TransactionBuilder(
+      new Account(payer.publicKey(), "100"),
+      { fee: BASE_FEE, networkPassphrase: Networks.TESTNET }
+    )
+      .addOperation(
+        Operation.payment({
+          destination: recipient.publicKey(),
+          asset: Asset.native(),
+          amount: "50.0000000",
+        })
+      )
+      .addMemo(Memo.text("WRONG"))
+      .setTimeout(300)
+      .build();
+
+    const result = validateTransactionIntent(tx.toXDR(), {
+      sourcePublicKey: payer.publicKey(),
+      destination: recipient.publicKey(),
+      assetCode: "XLM",
+      amount: "50.0000000",
+      memo: "EXP123",
+    }, Networks.TESTNET);
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("memo mismatch");
   });
 });

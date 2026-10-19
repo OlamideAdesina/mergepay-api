@@ -125,6 +125,80 @@ export async function auditTx(
   emitTelemetry(data);
 }
 
+/**
+ * Canonical audit-log write parameters — issue #660.
+ *
+ * The request-shaped sibling of {@link AuditParams}: it names the four facts
+ * every audit row records — the actor, the action, the target resource, and
+ * non-sensitive metadata — using the vocabulary of the issue
+ * (`actorId`, `action`, `resourceType`/`resourceId`, `metadata`). Internally
+ * it maps onto the same `audit_logs` columns (`userId`, `action`,
+ * `entityType`/`entityId`, `metadata`) through {@link logAction}, so route
+ * handlers have one obvious entry point and every row lands one shape.
+ */
+export interface LogActionParams {
+  /** `User.id` of the actor. Null (or omitted) for worker/system actions. */
+  actorId?: string | null;
+  /** Actor's Stellar public key — public material only, never a secret key. */
+  actorPublicKey?: string | null;
+  actorType?: AuditActorType;
+  /** Group the action belongs to, when the action is group-scoped. */
+  groupId?: string | null;
+  /** Action type from the structured vocabulary (src/services/audit-actions.ts). */
+  action: string;
+  /** Target resource type, e.g. "group", "group_member", "expense", "settlement". */
+  resourceType: string;
+  /** Target resource id. */
+  resourceId: string;
+  outcome?: AuditOutcome;
+  /** Safe structured detail only — never private keys, tokens, or signed XDRs. */
+  metadata?: Record<string, unknown>;
+}
+
+/** Map the issue-shaped params onto the repository's persisted column names. */
+function toAuditParams(params: LogActionParams): AuditParams {
+  return {
+    userId: params.actorId ?? null,
+    groupId: params.groupId ?? null,
+    action: params.action,
+    entityType: params.resourceType,
+    entityId: params.resourceId,
+    outcome: params.outcome,
+    actorType: params.actorType,
+    actorPublicKey: params.actorPublicKey ?? null,
+    metadata: params.metadata,
+  };
+}
+
+/**
+ * Record one state-changing action in the durable audit trail (issue #660).
+ *
+ * This is the canonical audit entry point for route handlers: it persists the
+ * actor, action type, target resource, and sanitized metadata to the
+ * `audit_logs` table and mirrors the event to the structured Pino auditor
+ * (src/lib/audit-logger.ts). Like {@link audit}, it is best-effort — a failed
+ * audit write never fails (or rolls back) the operation it documents.
+ *
+ * Actions that must be atomic with the mutation they describe use
+ * {@link logActionTx} inside the caller's transaction instead.
+ */
+export async function logAction(params: LogActionParams): Promise<void> {
+  await audit(toAuditParams(params));
+}
+
+/**
+ * Record one state-changing action inside an existing transaction, so the
+ * audit row commits — or rolls back — with the mutation itself. Unlike
+ * {@link logAction}, this deliberately propagates a write failure: a caller
+ * that asked for an atomic audit trail must not silently lose it.
+ */
+export async function logActionTx(
+  tx: Prisma.TransactionClient,
+  params: LogActionParams
+): Promise<void> {
+  await auditTx(tx, toAuditParams(params));
+}
+
 export interface GroupMemberAuditParams {
   userId: string;
   groupId: string;

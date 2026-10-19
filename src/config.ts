@@ -39,6 +39,12 @@ const schema = z.object({
   DATABASE_CONNECTION_LIMIT: z.coerce.number().int().positive().default(5),
   PORT: z.coerce.number().int().positive().default(4000),
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  // How long (ms) a request may occupy a connection before the server answers
+  // it with 408 Request Timeout. Bounds stalled handlers — a slow-loris client,
+  // a runaway Horizon call, or a database query the pool never resolves — so a
+  // request cannot pin a worker thread indefinitely. See
+  // src/plugins/request-timeout.ts for the enforcement mechanism.
+  REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
   API_PUBLIC_URL: urlSchema,
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
@@ -106,6 +112,29 @@ const schema = z.object({
   // If not set, derived from API_PUBLIC_URL so the deployed domain is used automatically.
   SEP10_HOME_DOMAIN: z.string().optional(),
   WEB_AUTH_DOMAIN: z.string().optional(),
+  /**
+   * How long a freshly issued SEP-10 challenge stays redeemable, in seconds.
+   *
+   * Bounded on both ends because this one number is a security parameter and an
+   * ergonomic one at the same time. A long window widens the replay surface —
+   * the durable store must hold every issued challenge until the envelope's own
+   * `maxTime` plus skew has passed, and a challenge an attacker lifted is
+   * signable the whole time — while a short one breaks the honest clients: a
+   * hardware wallet or a slow mobile signer can take tens of seconds between
+   * showing the envelope and returning it. SEP-10 itself recommends ~5 minutes,
+   * so that is the default and the range only permits tightening or loosening
+   * it by a bounded amount rather than an unbounded one.
+   *
+   * A typo like `3600` would otherwise be accepted as a valid number and
+   * silently turn logins into hour-long credentials; rejecting it at boot makes
+   * the mistake an operator sees.
+   */
+  SEP10_CHALLENGE_VALIDITY_SECONDS: z.coerce
+    .number()
+    .int("SEP10_CHALLENGE_VALIDITY_SECONDS must be a whole number of seconds")
+    .min(30, "SEP10_CHALLENGE_VALIDITY_SECONDS must be at least 30 seconds")
+    .max(600, "SEP10_CHALLENGE_VALIDITY_SECONDS must be at most 600 seconds")
+    .default(300),
   
   // Anchor configuration
   ANCHOR_HOME_DOMAIN: z.string().min(1, "ANCHOR_HOME_DOMAIN is required"),
@@ -295,6 +324,38 @@ const schema = z.object({
   RATE_LIMIT_GROUP_WINDOW_MS: z.coerce.number().int().positive().max(MAX_RATE_LIMIT_WINDOW_MS).default(60000),
   RATE_LIMIT_HISTORY: z.coerce.number().int().positive().max(100000).default(30),
   RATE_LIMIT_HISTORY_WINDOW_MS: z.coerce.number().int().positive().max(MAX_RATE_LIMIT_WINDOW_MS).default(60000),
+  // Issue #668 — the routes that were left on the global bucket. Each is a
+  // category the table did not model: a public unauthenticated read, the
+  // membership writes, outbound-webhook registration, and multipart upload.
+  //
+  // GET /api/exchange-rates answers without a session, and every call prices
+  // two asset pairs through the anchor services, so it is the one route an
+  // anonymous scanner can spend real upstream budget on. Keyed by IP, because
+  // there is no identity to key by.
+  RATE_LIMIT_EXCHANGE_RATES_MAX: z.coerce.number().int().positive().max(100000).default(30),
+  RATE_LIMIT_EXCHANGE_RATES_WINDOW_MS: z.coerce.number().int().positive().max(MAX_RATE_LIMIT_WINDOW_MS).default(60000),
+  // Invitations are writes with side effects beyond the caller's own data: each
+  // one targets a third-party account. The budget is deliberately tighter than
+  // group creation because a compromised admin session spams members, not
+  // groups.
+  RATE_LIMIT_GROUP_INVITE_MAX: z.coerce.number().int().positive().max(100000).default(10),
+  RATE_LIMIT_GROUP_INVITE_WINDOW_MS: z.coerce.number().int().positive().max(MAX_RATE_LIMIT_WINDOW_MS).default(60000),
+  // Joining redeems an invite code, so the abuse shape is guessing codes that
+  // belong to other groups. That threat is per-source, not per-account — an
+  // attacker rotates accounts as easily as codes — so this bucket is keyed by
+  // IP and runs on `onRequest`, before the session is even read.
+  RATE_LIMIT_GROUP_JOIN_MAX: z.coerce.number().int().positive().max(100000).default(10),
+  RATE_LIMIT_GROUP_JOIN_WINDOW_MS: z.coerce.number().int().positive().max(MAX_RATE_LIMIT_WINDOW_MS).default(60000),
+  // Registering a webhook makes the server issue outbound HTTP to a
+  // caller-supplied URL on a retry schedule, so a single account can multiply
+  // one request into many egress attempts.
+  RATE_LIMIT_WEBHOOK_CREATE_MAX: z.coerce.number().int().positive().max(100000).default(10),
+  RATE_LIMIT_WEBHOOK_CREATE_WINDOW_MS: z.coerce.number().int().positive().max(MAX_RATE_LIMIT_WINDOW_MS).default(60000),
+  // Receipt uploads write to disk and are retried by clients that lost the
+  // response, so they need a budget of their own rather than the global one
+  // they share with every read the same client makes.
+  RATE_LIMIT_UPLOAD_RECEIPT_MAX: z.coerce.number().int().positive().max(100000).default(20),
+  RATE_LIMIT_UPLOAD_RECEIPT_WINDOW_MS: z.coerce.number().int().positive().max(MAX_RATE_LIMIT_WINDOW_MS).default(60000),
   // trusted proxies: only trust X-Forwarded-For if the direct peer is in this
   // comma-separated list; otherwise Fastify falls back to req.ip = socket remote.
   TRUSTED_PROXY_IPS: z.string().default(""),

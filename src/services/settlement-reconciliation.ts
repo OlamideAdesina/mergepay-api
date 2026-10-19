@@ -173,6 +173,8 @@ export async function reconcileSingleSettlement(
         });
         await audit({
           userId: null,
+          groupId: settlement.groupId,
+          actorType: "worker",
           action: "settlement.verification_failed",
           entityType: "settlement",
           entityId: settlement.id,
@@ -205,6 +207,8 @@ export async function reconcileSingleSettlement(
     });
     await audit({
       userId: null,
+      groupId: settlement.groupId,
+      actorType: "worker",
       action: "settlement.completed",
       entityType: "settlement",
       entityId: settlement.id,
@@ -227,6 +231,8 @@ export async function reconcileSingleSettlement(
   });
   await audit({
     userId: null,
+    groupId: settlement.groupId,
+    actorType: "worker",
     action: "settlement.failed",
     entityType: "settlement",
     entityId: settlement.id,
@@ -265,7 +271,13 @@ function memoFailureMetadata(err: unknown): { memoFailure?: string } {
 }
 
 async function handleTransactionNotFound(
-  settlement: { id: string; retryCount: number; status?: string; pendingSince?: Date | null },
+  settlement: {
+    id: string;
+    groupId?: string;
+    retryCount: number;
+    status?: string;
+    pendingSince?: Date | null;
+  },
   hash: string,
   maxRetries: number,
   recLog: ReturnType<typeof loggerWithContext>
@@ -304,6 +316,8 @@ async function handleTransactionNotFound(
     });
     await audit({
       userId: null,
+      groupId: settlement.groupId,
+      actorType: "worker",
       action: "settlement.reconciliation.exhausted",
       entityType: "settlement",
       entityId: settlement.id,

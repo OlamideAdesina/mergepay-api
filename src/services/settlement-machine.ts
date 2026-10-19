@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { AppError, Errors } from "../errors";
-import { auditTx } from "./audit";
+import { logActionTx } from "./audit";
 import { recordStatusTransitionInTransaction } from "./status-history";
 import { emitEvent, type WebhookEventType } from "./event";
 
@@ -98,6 +98,7 @@ export async function applySettlementTransition(params: ApplySettlementTransitio
       where: { id: settlementId },
       select: {
         id: true,
+        groupId: true,
         status: true,
         fromUserId: true,
         expenseShareId: true,
@@ -161,11 +162,16 @@ export async function applySettlementTransition(params: ApplySettlementTransitio
       select: { id: true, status: true, expenseShareId: true },
     });
 
-    await auditTx(client, {
-      userId: settlement.fromUserId,
+    await logActionTx(client, {
+      actorId: settlement.fromUserId,
+      groupId: settlement.groupId,
+      // `source` is the transition's own provenance and its values are exactly
+      // the actor vocabulary, so a worker's confirmation is recorded as the
+      // worker's act even though the row belongs to the payer.
+      actorType: source,
       action: "settlement.status_changed",
-      entityType: "settlement",
-      entityId: settlementId,
+      resourceType: "settlement",
+      resourceId: settlementId,
       metadata: {
         from: current,
         to: nextStatus,

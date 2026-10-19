@@ -39,7 +39,11 @@ vi.mock("../src/db", () => ({ prisma: h.prisma }));
 vi.mock("../src/services/stellar", () => ({
   stellar: { getTransaction: h.getTransaction },
 }));
-vi.mock("../src/services/audit", () => ({ audit: h.audit, auditTx: vi.fn() }));
+vi.mock("../src/services/audit", () => ({
+  audit: h.audit,
+  auditTx: vi.fn(),
+  logActionTx: vi.fn(),
+}));
 vi.mock("../src/services/webhook", () => ({ dispatchEvent: vi.fn(async () => undefined) }));
 vi.mock("@stellar/stellar-sdk", async (importActual) => {
   const actual = await importActual<typeof import("@stellar/stellar-sdk")>();

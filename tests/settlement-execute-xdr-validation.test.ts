@@ -37,6 +37,9 @@ const h = vi.hoisted(() => {
   const prisma: any = {
     settlement: model(),
     groupMember: model(),
+    // The execute route now reads the group's `archived` flag (#648); an active
+    // group (or the mock's null default) lets a member's request proceed.
+    group: model(),
     idempotencyKey: model(),
     statusHistory: model(),
     auditLog: model(),
